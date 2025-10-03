@@ -145,6 +145,7 @@ impl Endpoint {
         ecn: Option<EcnCodepoint>,
         data: BytesMut,
         buf: &mut Vec<u8>,
+        extra_data: Option<Vec<u8>>,
     ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
@@ -160,6 +161,7 @@ impl Endpoint {
                 ecn,
                 first_decode,
                 remaining,
+                extra_data,
             },
             Err(PacketDecodeError::UnsupportedVersion {
                 src_cid,
@@ -511,6 +513,7 @@ impl Endpoint {
             token,
             incoming_idx,
             improper_drop_warner: IncomingImproperDropWarner,
+            extra_data: event.extra_data,
         }))
     }
 
@@ -632,6 +635,11 @@ impl Endpoint {
             },
         );
         self.index.insert_initial(dst_cid, ch);
+
+        // Attach extra data from the initial datagram if present
+        if incoming.extra_data.is_some() {
+            conn.set_extra_data(incoming.extra_data);
+        }
 
         match conn.handle_first_packet(
             incoming.received_at,
@@ -1158,6 +1166,8 @@ pub struct Incoming {
     token: IncomingToken,
     incoming_idx: usize,
     improper_drop_warner: IncomingImproperDropWarner,
+    /// Extra metadata from the initial datagram (e.g., from RecvMeta)
+    extra_data: Option<Vec<u8>>,
 }
 
 impl Incoming {

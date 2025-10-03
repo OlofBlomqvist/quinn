@@ -87,6 +87,39 @@ pub const BATCH_SIZE: usize = imp::BATCH_SIZE;
 #[cfg(wasm_browser)]
 pub const BATCH_SIZE: usize = 1;
 
+#[derive(Debug, Copy, Clone)]
+pub enum FixedLenArray {
+    B8([u8;8]),
+    B16([u8;16]),
+    B19([u8;19]),
+    B32([u8;32]),
+    B64([u8;64])
+}
+
+impl FixedLenArray {
+    /// Convert the fixed-length array to a Vec<u8>
+    pub fn to_vec(&self) -> Vec<u8> {
+        match self {
+            FixedLenArray::B8(arr) => arr.to_vec(),
+            FixedLenArray::B16(arr) => arr.to_vec(),
+            FixedLenArray::B19(arr) => arr.to_vec(),
+            FixedLenArray::B32(arr) => arr.to_vec(),
+            FixedLenArray::B64(arr) => arr.to_vec(),
+        }
+    }
+
+    /// Get a slice reference to the underlying bytes
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            FixedLenArray::B8(arr) => arr.as_slice(),
+            FixedLenArray::B16(arr) => arr.as_slice(),
+            FixedLenArray::B19(arr) => arr.as_slice(),
+            FixedLenArray::B32(arr) => arr.as_slice(),
+            FixedLenArray::B64(arr) => arr.as_slice(),
+        }
+    }
+}
+
 /// Metadata for a single buffer filled with bytes received from the network
 ///
 /// This associated buffer can contain one or more datagrams, see [`stride`].
@@ -95,6 +128,9 @@ pub const BATCH_SIZE: usize = 1;
 #[derive(Debug, Copy, Clone)]
 #[non_exhaustive]
 pub struct RecvMeta {
+
+    pub extra_info : Option<FixedLenArray>,
+
     /// The source address of the datagram(s) contained in the buffer
     pub addr: SocketAddr,
     /// The number of bytes the associated buffer has
@@ -124,6 +160,7 @@ impl Default for RecvMeta {
     /// Constructs a value with arbitrary fields, intended to be overwritten
     fn default() -> Self {
         Self {
+            extra_info: None,
             addr: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
             len: 0,
             stride: 0,

@@ -24,6 +24,8 @@ pub(crate) struct DatagramConnectionEvent {
     pub(crate) ecn: Option<EcnCodepoint>,
     pub(crate) first_decode: PartialDecode,
     pub(crate) remaining: Option<BytesMut>,
+    /// Extra metadata associated with this datagram (e.g., from RecvMeta)
+    pub(crate) extra_data: Option<Vec<u8>>,
 }
 
 /// Events sent from a Connection to an Endpoint

@@ -525,6 +525,15 @@ impl Connection {
         self.0.state.lock("local_ip").inner.local_ip()
     }
 
+    /// Get extra metadata associated with this connection
+    ///
+    /// Returns the extra data that was attached to this connection from the initial datagram's
+    /// RecvMeta, if any was present. This can be used to access application-specific metadata
+    /// that was attached at the UDP layer.
+    pub fn extra_data(&self) -> Option<Vec<u8>> {
+        self.0.state.lock("extra_data").inner.extra_data().map(|data| data.to_vec())
+    }
+
     /// Current best estimate of this connection's latency (round-trip-time)
     pub fn rtt(&self) -> Duration {
         self.0.state.lock("rtt").inner.rtt()

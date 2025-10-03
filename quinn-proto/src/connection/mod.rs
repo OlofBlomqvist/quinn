@@ -238,6 +238,8 @@ pub struct Connection {
     stats: ConnectionStats,
     /// QUIC version used for the connection.
     version: u32,
+    /// Extra metadata associated with this connection (e.g., from the initial RecvMeta)
+    extra_data: Option<Vec<u8>>,
 }
 
 impl Connection {
@@ -355,6 +357,7 @@ impl Connection {
             rng,
             stats: ConnectionStats::default(),
             version,
+            extra_data: None,
         };
         if path_validated {
             this.on_path_validated();
@@ -1098,7 +1101,15 @@ impl Connection {
                 ecn,
                 first_decode,
                 remaining,
+                extra_data,
             }) => {
+                tracing::warn!("WOOOO");
+                // Attach extra data to connection if not already set
+                if self.extra_data.is_none() && extra_data.is_some() {
+                    tracing::warn!("WOOOWWEEEEO");
+                    self.extra_data = extra_data;
+                }
+                tracing::warn!("WAAAA");
                 // If this packet could initiate a migration and we're a client or a server that
                 // forbids migration, drop the datagram. This could be relaxed to heuristically
                 // permit NAT-rebinding-like migration.
@@ -1431,6 +1442,21 @@ impl Connection {
         if self.streams.set_receive_window(receive_window) {
             self.spaces[SpaceId::Data].pending.max_data = true;
         }
+    }
+
+    /// Set extra metadata associated with this connection
+    ///
+    /// This can be used to attach application-specific data (e.g., from the initial RecvMeta).
+    /// If extra_data is already set, this will replace it.
+    pub fn set_extra_data(&mut self, data: Option<Vec<u8>>) {
+        self.extra_data = data;
+    }
+
+    /// Get extra metadata associated with this connection
+    ///
+    /// Returns the extra data that was attached to this connection, if any.
+    pub fn extra_data(&self) -> Option<&[u8]> {
+        self.extra_data.as_deref()
     }
 
     fn on_ack_received(

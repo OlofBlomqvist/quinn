@@ -786,6 +786,7 @@ fn decode_recv(
     };
 
     Ok(RecvMeta {
+        extra_info: None,
         len,
         stride,
         addr,

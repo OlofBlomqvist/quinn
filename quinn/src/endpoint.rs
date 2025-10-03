@@ -831,6 +831,7 @@ impl RecvState {
                     self.recv_limiter.record_work(msgs);
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
                         let mut data: BytesMut = buf[0..meta.len].into();
+                        let extra_data = meta.extra_info.map(|arr| arr.to_vec());
                         while !data.is_empty() {
                             let buf = data.split_to(meta.stride.min(data.len()));
                             let mut response_buffer = Vec::new();
@@ -841,6 +842,7 @@ impl RecvState {
                                 meta.ecn.map(proto_ecn),
                                 buf,
                                 &mut response_buffer,
+                                extra_data.clone(),
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
                                     if self.connections.close.is_none() {
