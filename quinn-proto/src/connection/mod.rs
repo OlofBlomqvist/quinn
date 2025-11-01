@@ -1104,13 +1104,10 @@ impl Connection {
                 remaining,
                 extra_data,
             }) => {
-                tracing::warn!("WOOOO");
                 // Attach extra data to connection if not already set
                 if self.extra_data.is_none() && extra_data.is_some() {
-                    tracing::warn!("WOOOWWEEEEO");
                     self.extra_data = extra_data;
                 }
-                tracing::warn!("WAAAA");
                 // If this packet could initiate a migration and we're a client or a server that
                 // forbids migration, drop the datagram. This could be relaxed to heuristically
                 // permit NAT-rebinding-like migration.
