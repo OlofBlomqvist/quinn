@@ -720,9 +720,10 @@ fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     }
 
     Ok(RecvMeta {
+        extra_info: None,
+        addr: decode_socket_addr(&name)?,
         len,
         stride: ctrl.stride,
-        addr: decode_socket_addr(&name)?,
         ecn: EcnCodepoint::from_bits(ctrl.ecn_bits),
         dst_ip: ctrl.dst_ip,
         interface_index: ctrl.interface_index,
@@ -818,20 +819,9 @@ fn decode_socket_addr(name: &libc::sockaddr_storage) -> io::Result<SocketAddr> {
         }
         f => Err(io::Error::other(format!(
             "expected AF_INET or AF_INET6, got {f}"
-        ))),
+        )))
     }
-
-    Ok(RecvMeta {
-        extra_info: None,
-        len,
-        stride,
-        addr,
-        ecn: EcnCodepoint::from_bits(ecn_bits),
-        dst_ip,
-        interface_index,
-    })
 }
-
 #[cfg(not(apple_slow))]
 // Chosen somewhat arbitrarily; might benefit from additional tuning.
 pub(crate) const BATCH_SIZE: usize = 32;
