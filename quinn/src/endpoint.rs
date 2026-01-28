@@ -7,11 +7,18 @@ use std::{
     net::{SocketAddr, SocketAddrV6},
     pin::Pin,
     str,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-#[cfg(all(not(wasm_browser), any(feature = "aws-lc-rs", feature = "ring")))]
+#[cfg(all(
+    not(wasm_browser),
+    any(feature = "runtime-tokio", feature = "runtime-smol"),
+    any(feature = "aws-lc-rs", feature = "ring"),
+))]
 use crate::runtime::default_runtime;
 use crate::{
     Instant,
@@ -25,7 +32,11 @@ use proto::{
     EndpointEvent, ServerConfig,
 };
 use rustc_hash::FxHashMap;
-#[cfg(all(not(wasm_browser), any(feature = "aws-lc-rs", feature = "ring"),))]
+#[cfg(all(
+    not(wasm_browser),
+    any(feature = "runtime-tokio", feature = "runtime-smol"),
+    any(feature = "aws-lc-rs", feature = "ring"),
+))]
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::{Notify, futures::Notified, mpsc};
 use tracing::{Instrument, Span};
@@ -45,7 +56,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     pub(crate) inner: EndpointRef,
-    pub(crate) default_client_config: Option<ClientConfig>,
     runtime: Arc<dyn Runtime>,
 }
 
@@ -67,7 +77,11 @@ impl Endpoint {
     ///
     /// Some environments may not allow creation of dual-stack sockets, in which case an IPv6
     /// client will only be able to connect to IPv6 servers. An IPv4 client is never dual-stack.
-    #[cfg(all(not(wasm_browser), any(feature = "aws-lc-rs", feature = "ring")))] // `EndpointConfig::default()` is only available with these
+    #[cfg(all(
+        not(wasm_browser),
+        any(feature = "runtime-tokio", feature = "runtime-smol"),
+        any(feature = "aws-lc-rs", feature = "ring"), // `EndpointConfig::default()` is only available with these
+    ))]
     pub fn client(addr: SocketAddr) -> io::Result<Self> {
         let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
         if addr.is_ipv6() {
@@ -97,7 +111,11 @@ impl Endpoint {
     /// IPv6 address on Windows will not by default be able to communicate with IPv4
     /// addresses. Portable applications should bind an address that matches the family they wish to
     /// communicate within.
-    #[cfg(all(not(wasm_browser), any(feature = "aws-lc-rs", feature = "ring")))] // `EndpointConfig::default()` is only available with these
+    #[cfg(all(
+        not(wasm_browser),
+        any(feature = "runtime-tokio", feature = "runtime-smol"),
+        any(feature = "aws-lc-rs", feature = "ring"), // `EndpointConfig::default()` is only available with these
+    ))]
     pub fn server(config: ServerConfig, addr: SocketAddr) -> io::Result<Self> {
         let socket = std::net::UdpSocket::bind(addr)?;
         let runtime =
@@ -136,12 +154,7 @@ impl Endpoint {
         let allow_mtud = !socket.may_fragment();
         let rc = EndpointRef::new(
             socket,
-            proto::Endpoint::new(
-                Arc::new(config),
-                server_config.map(Arc::new),
-                allow_mtud,
-                None,
-            ),
+            proto::Endpoint::new(Arc::new(config), server_config.map(Arc::new), allow_mtud),
             addr.is_ipv6(),
             runtime.clone(),
         );
@@ -154,11 +167,7 @@ impl Endpoint {
             }
             .instrument(Span::current()),
         ));
-        Ok(Self {
-            inner: rc,
-            default_client_config: None,
-            runtime,
-        })
+        Ok(Self { inner: rc, runtime })
     }
 
     /// Get the next incoming connection attempt from a client
@@ -175,8 +184,8 @@ impl Endpoint {
     }
 
     /// Set the client configuration used by `connect`
-    pub fn set_default_client_config(&mut self, config: ClientConfig) {
-        self.default_client_config = Some(config);
+    pub fn set_default_client_config(&self, config: ClientConfig) {
+        self.inner.0.state.lock().unwrap().default_client_config = Some(config);
     }
 
     /// Connect to a remote endpoint
@@ -188,9 +197,16 @@ impl Endpoint {
     /// May fail immediately due to configuration errors, or in the future if the connection could
     /// not be established.
     pub fn connect(&self, addr: SocketAddr, server_name: &str) -> Result<Connecting, ConnectError> {
-        let config = match &self.default_client_config {
-            Some(config) => config.clone(),
-            None => return Err(ConnectError::NoDefaultClientConfig),
+        let Some(config) = self
+            .inner
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .default_client_config
+            .clone()
+        else {
+            return Err(ConnectError::NoDefaultClientConfig);
         };
 
         self.connect_with(config, addr, server_name)
@@ -362,7 +378,7 @@ pub(crate) struct EndpointDriver(pub(crate) EndpointRef);
 impl Future for EndpointDriver {
     type Output = Result<(), io::Error>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut endpoint = self.0.state.lock().unwrap();
         if endpoint.driver.is_none() {
             endpoint.driver = Some(cx.waker().clone());
@@ -377,7 +393,9 @@ impl Future for EndpointDriver {
             self.0.shared.incoming.notify_waiters();
         }
 
-        if endpoint.ref_count == 0 && endpoint.recv_state.connections.is_empty() {
+        if self.0.shared.ref_count.load(Ordering::Relaxed) == 0
+            && endpoint.recv_state.connections.is_empty()
+        {
             Poll::Ready(Ok(()))
         } else {
             drop(endpoint);
@@ -475,21 +493,22 @@ pub(crate) struct State {
     driver: Option<Waker>,
     ipv6: bool,
     events: mpsc::UnboundedReceiver<(ConnectionHandle, EndpointEvent)>,
-    /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
-    ref_count: usize,
     driver_lost: bool,
     runtime: Arc<dyn Runtime>,
     stats: EndpointStats,
+    default_client_config: Option<ClientConfig>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Shared {
     incoming: Notify,
     idle: Notify,
+    /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
+    ref_count: AtomicUsize,
 }
 
 impl State {
-    fn drive_recv(&mut self, cx: &mut Context, now: Instant) -> Result<bool, io::Error> {
+    fn drive_recv(&mut self, cx: &mut Context<'_>, now: Instant) -> Result<bool, io::Error> {
         let get_time = || self.runtime.now();
         self.recv_state.recv_limiter.start_cycle(get_time);
         if let Some(socket) = &mut self.prev_socket {
@@ -524,7 +543,7 @@ impl State {
         Ok(poll_res.keep_going)
     }
 
-    fn handle_events(&mut self, cx: &mut Context, shared: &Shared) -> bool {
+    fn handle_events(&mut self, cx: &mut Context<'_>, shared: &Shared) -> bool {
         for _ in 0..IO_LOOP_BOUND {
             let (ch, event) = match self.events.poll_recv(cx) {
                 Poll::Ready(Some(x)) => x,
@@ -722,6 +741,7 @@ impl EndpointRef {
             shared: Shared {
                 incoming: Notify::new(),
                 idle: Notify::new(),
+                ref_count: AtomicUsize::new(0),
             },
             state: Mutex::new(State {
                 socket,
@@ -731,11 +751,11 @@ impl EndpointRef {
                 ipv6,
                 events,
                 driver: None,
-                ref_count: 0,
                 driver_lost: false,
                 recv_state,
                 runtime,
                 stats: EndpointStats::default(),
+                default_client_config: None,
             }),
         }))
     }
@@ -743,23 +763,22 @@ impl EndpointRef {
 
 impl Clone for EndpointRef {
     fn clone(&self) -> Self {
-        self.0.state.lock().unwrap().ref_count += 1;
+        self.0.shared.ref_count.fetch_add(1, Ordering::Relaxed);
         Self(self.0.clone())
     }
 }
 
 impl Drop for EndpointRef {
     fn drop(&mut self) {
+        if self.shared.ref_count.fetch_sub(1, Ordering::Relaxed) > 0 {
+            return;
+        }
+
         let endpoint = &mut *self.0.state.lock().unwrap();
-        if let Some(x) = endpoint.ref_count.checked_sub(1) {
-            endpoint.ref_count = x;
-            if x == 0 {
-                // If the driver is about to be on its own, ensure it can shut down if the last
-                // connection is gone.
-                if let Some(task) = endpoint.driver.take() {
-                    task.wake();
-                }
-            }
+        // If the driver is about to be on its own, ensure it can shut down if the last
+        // connection is gone.
+        if let Some(task) = endpoint.driver.take() {
+            task.wake();
         }
     }
 }
@@ -805,7 +824,7 @@ impl RecvState {
 
     fn poll_socket(
         &mut self,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
         endpoint: &mut proto::Endpoint,
         socket: &mut dyn AsyncUdpSocket,
         sender: &mut Pin<Box<dyn UdpSender>>,
@@ -814,7 +833,7 @@ impl RecvState {
     ) -> Result<PollProgress, io::Error> {
         let mut received_connection_packet = false;
         let mut metas = [RecvMeta::default(); BATCH_SIZE];
-        let mut iovs: [IoSliceMut; BATCH_SIZE] = {
+        let mut iovs: [IoSliceMut<'_>; BATCH_SIZE] = {
             let mut bufs = self
                 .recv_buf
                 .chunks_mut(self.recv_buf.len() / BATCH_SIZE)
@@ -897,7 +916,7 @@ impl RecvState {
 }
 
 impl fmt::Debug for RecvState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecvState")
             .field("incoming", &self.incoming)
             .field("connections", &self.connections)

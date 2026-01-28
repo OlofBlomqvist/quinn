@@ -1,10 +1,11 @@
+#[cfg(any(feature = "runtime-tokio", feature = "runtime-smol"))]
+use std::sync::Arc;
 use std::{
     fmt::{self, Debug},
     future::Future,
     io::{self, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -35,7 +36,7 @@ pub trait AsyncTimer: Send + Debug + 'static {
     /// Update the timer to expire at `i`
     fn reset(self: Pin<&mut Self>, i: Instant);
     /// Check whether the timer has expired, and register to be woken if not
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()>;
 }
 
 /// Abstract implementation of a UDP socket for runtime independence
@@ -55,7 +56,7 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
     fn poll_recv(
         &mut self,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>>;
@@ -94,8 +95,8 @@ pub trait UdpSender: Send + Sync + Debug + 'static {
     /// unlike [`Future::poll`], so calling it again after readiness should not panic.
     fn poll_send(
         self: Pin<&mut Self>,
-        transmit: &Transmit,
-        cx: &mut Context,
+        transmit: &Transmit<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<io::Result<()>>;
 
     /// Maximum number of datagrams that a [`Transmit`] may encode.
@@ -159,8 +160,8 @@ where
 {
     fn poll_send(
         self: Pin<&mut Self>,
-        transmit: &udp::Transmit,
-        cx: &mut Context,
+        transmit: &udp::Transmit<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<io::Result<()>> {
         let mut this = self.project();
         loop {
@@ -208,7 +209,7 @@ trait UdpSenderHelperSocket: Send + Sync + 'static {
     /// If not write-ready, this is allowed to return [`std::io::ErrorKind::WouldBlock`].
     ///
     /// The [`UdpSenderHelper`] will use this to implement [`UdpSender::poll_send`].
-    fn try_send(&self, transmit: &udp::Transmit) -> io::Result<()>;
+    fn try_send(&self, transmit: &udp::Transmit<'_>) -> io::Result<()>;
 
     /// See [`UdpSender::max_transmit_segments`].
     fn max_transmit_segments(&self) -> usize;
@@ -219,6 +220,7 @@ trait UdpSenderHelperSocket: Send + Sync + 'static {
 /// If `runtime-tokio` is enabled and this function is called from within a Tokio runtime context,
 /// then `TokioRuntime` is returned. Otherwise, if `runtime-smol` is enabled, `SmolRuntime` is
 /// returned. Otherwise, `None` is returned.
+#[cfg(any(feature = "runtime-tokio", feature = "runtime-smol"))]
 #[allow(clippy::needless_return)] // Be sure we return the right thing
 pub fn default_runtime() -> Option<Arc<dyn Runtime>> {
     #[cfg(feature = "runtime-tokio")]
@@ -239,12 +241,10 @@ pub fn default_runtime() -> Option<Arc<dyn Runtime>> {
 
 #[cfg(feature = "runtime-tokio")]
 mod tokio;
-// Due to MSRV, we must specify `self::` where there's crate/module ambiguity
 #[cfg(feature = "runtime-tokio")]
-pub use self::tokio::TokioRuntime;
+pub use tokio::TokioRuntime;
 
-#[cfg(feature = "async-io")]
-mod async_io;
-// Due to MSRV, we must specify `self::` where there's crate/module ambiguity
 #[cfg(feature = "runtime-smol")]
-pub use self::async_io::*;
+mod smol;
+#[cfg(feature = "runtime-smol")]
+pub use smol::*;
