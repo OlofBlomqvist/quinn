@@ -271,6 +271,7 @@ impl UdpSocketState {
             ecn: EcnCodepoint::from_bits(ecn_bits as u8),
             dst_ip,
             interface_index,
+            extra_info: None,
         };
         Ok(1)
     }

@@ -73,6 +73,7 @@ impl UdpSocketState {
             ecn: None,
             dst_ip: None,
             interface_index: None,
+            extra_info: None,
         };
         Ok(1)
     }
